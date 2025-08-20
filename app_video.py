@@ -1,161 +1,95 @@
-import io
-import os
-import tempfile
-from pathlib import Path
-
 import streamlit as st
+from pathlib import Path
+from compress_video import compress_video, decompress_video
 
-from compress_video import (
-    compress_video_ffmpeg,
-    package_as_genesisvid,
-    unpack_genesisvid,
-    make_unique_name,
+# Set page config
+st.set_page_config(
+    page_title="SoulGenesis Video Compressor",
+    page_icon="🎥",
+    layout="centered"
 )
 
-st.set_page_config(page_title="SoulGenesis Video", page_icon="🎥", layout="centered")
-st.title("🎥 SoulGenesis Video – Offline Compression & Reconstruction")
-
-st.caption(
-    "Uses local **ffmpeg** (H.265 + CRF + AAC). No cloud. Keep audio. Smooth motion. Optional “.genesisvid” packaging."
+# Styling
+st.markdown(
+    """
+    <style>
+    .main {
+        background-color: #0E1117;
+        color: #FAFAFA;
+    }
+    .stButton>button {
+        background: linear-gradient(90deg, #00C9FF 0%, #92FE9D 100%);
+        color: black;
+        border-radius: 12px;
+        padding: 0.6em 1.2em;
+        font-weight: bold;
+        border: none;
+    }
+    .stDownloadButton>button {
+        background: linear-gradient(90deg, #FF8A00 0%, #E52E71 100%);
+        color: white;
+        border-radius: 12px;
+        padding: 0.6em 1.2em;
+        font-weight: bold;
+        border: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
-with st.expander("Install once (offline)", expanded=False):
-    st.markdown(
-        """
-**ffmpeg required**  
-- **macOS**: `brew install ffmpeg`  
-- **Windows**: `choco install ffmpeg` (or download from ffmpeg.org and add to PATH)  
-- **Linux (Debian/Ubuntu)**: `sudo apt-get install ffmpeg`  
+st.title("🎥 SoulGenesis Video Compressor")
+st.caption("Military-grade offline compression, built for smooth playback and efficiency.")
 
-**Python deps**  
-`pip install streamlit`
-"""
-    )
+# Increase upload size to 2 GB
+st.file_uploader.__defaults__ = (["mp4", "mov", "avi", "mkv"], "Upload video...", True, "file", 2 * 1024 * 1024 * 1024)
 
-tab1, tab2 = st.tabs(["Compress ➜ .mp4 / .genesisvid", "Reconstruct from .genesisvid"])
+# Tabs
+tab1, tab2 = st.tabs(["📦 Compress Video", "🔓 Decompress Video"])
 
+# ============ Compression ============
 with tab1:
-    st.subheader("Compress a video")
-    up = st.file_uploader("Upload MP4/MOV/M4V", type=["mp4", "mov", "m4v", "mkv"], accept_multiple_files=False)
+    st.subheader("📦 Compress to .genesisvid.mp4")
 
-    colA, colB = st.columns(2)
-    with colA:
-        crf = st.slider("Quality (CRF)", 18, 36, 28, help="Lower = better quality (and larger). 26–30 is a good range.")
-        preset = st.selectbox(
-            "Speed/Size Preset",
-            ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
-            index=5,
-            help="Slower gives smaller files.",
-        )
-    with colB:
-        fps = st.number_input("Target FPS (0 = keep source)", min_value=0, max_value=120, value=0, step=1)
-        max_res = st.selectbox("Max Resolution (long side)", ["Keep source", 480, 720, 1080, 1440, 2160], index=2)
+    uploaded_file = st.file_uploader("Upload Video", type=["mp4", "mov", "avi", "mkv"], key="compress")
 
-    wrap_genesis = st.checkbox("Also package as .genesisvid", value=True)
+    crf = st.slider("🎚️ Compression Quality (Lower = Better Quality, Larger File)", 18, 35, 28)
+    preset = st.selectbox("⚡ Encoding Speed / Compression Trade-off",
+                          ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+                          index=5)
 
-    if st.button("Compress"):
-        if not up:
-            st.warning("Upload a video first.")
-        else:
-            try:
-                # Save uploaded file to a temp path
-                suffix = Path(up.name).suffix or ".mp4"
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_in:
-                    tmp_in.write(up.getbuffer())
-                    in_path = Path(tmp_in.name)
+    if uploaded_file and st.button("🚀 Compress Video"):
+        in_path = Path(uploaded_file.name)
+        with open(in_path, "wb") as f:
+            f.write(uploaded_file.read())
 
-                # Build output names
-                stem = Path(up.name).stem
-                fps_opt = None if fps == 0 else int(fps)
-                res_opt = None if max_res == "Keep source" else int(max_res)
+        out_path = Path(in_path.stem + "_compressed.genesisvid.mp4")
 
-                out_name_mp4 = make_unique_name(stem, crf, fps_opt, res_opt, "mp4")
-                out_name_gen = make_unique_name(stem, crf, fps_opt, res_opt, "genesisvid")
+        with st.spinner("Compressing... please wait ⏳"):
+            compress_video(in_path, out_path, crf=crf, preset=preset)
 
-                tmp_out_mp4 = Path(tempfile.gettempdir()) / out_name_mp4
-                # Compress
-                compressed_mp4 = compress_video_ffmpeg(
-                    input_path=in_path,
-                    output_path=tmp_out_mp4,
-                    crf=crf,
-                    preset=preset,
-                    target_fps=fps_opt,
-                    max_resolution=res_opt,
-                )
+        if out_path.exists():
+            st.success(f"✅ Compression complete: {out_path.name}")
+            with open(out_path, "rb") as f:
+                st.download_button("⬇️ Download Compressed Video", f, file_name=out_path.name)
 
-                # Show stats
-                in_size = Path(in_path).stat().st_size
-                out_size = Path(compressed_mp4).stat().st_size
-                reduction = (1 - out_size / max(in_size, 1)) * 100
-
-                st.success(f"Done. Size: {in_size/1e6:.2f} MB → {out_size/1e6:.2f} MB ({reduction:.1f}% smaller)")
-                st.video(str(compressed_mp4))
-
-                with open(compressed_mp4, "rb") as f:
-                    st.download_button(
-                        label=f"⬇️ Download MP4 ({out_name_mp4})",
-                        data=f.read(),
-                        file_name=out_name_mp4,
-                        mime="video/mp4",
-                    )
-
-                if wrap_genesis:
-                    tmp_out_gen = Path(tempfile.gettempdir()) / out_name_gen
-                    gen_path, meta = package_as_genesisvid(
-                        mp4_path=compressed_mp4,
-                        genesis_path=tmp_out_gen,
-                        orig_name=up.name,
-                        codec="libx265",
-                        crf=crf,
-                        preset=preset,
-                        target_fps=fps_opt,
-                        max_resolution=res_opt,
-                    )
-                    with open(gen_path, "rb") as gf:
-                        st.download_button(
-                            label=f"⬇️ Download .genesisvid ({out_name_gen})",
-                            data=gf.read(),
-                            file_name=out_name_gen,
-                            mime="application/octet-stream",
-                        )
-
-                # Clean input temp (keep outputs until app restarts)
-                try:
-                    in_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-            except Exception as e:
-                st.error(f"Error during compression: {e}")
-
+# ============ Decompression ============
 with tab2:
-    st.subheader("Reconstruct from .genesisvid")
-    gen = st.file_uploader("Upload .genesisvid", type=["genesisvid"], accept_multiple_files=False)
+    st.subheader("🔓 Decompress .genesisvid.mp4 back to playable MP4")
 
-    if st.button("Reconstruct"):
-        if not gen:
-            st.warning("Upload a .genesisvid file first.")
-        else:
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".genesisvid") as tmp_gen:
-                    tmp_gen.write(gen.getbuffer())
-                    gen_path = Path(tmp_gen.name)
+    uploaded_file = st.file_uploader("Upload .genesisvid.mp4", type=["mp4"], key="decompress")
 
-                # Output mp4 path
-                out_mp4 = Path(tempfile.gettempdir()) / (Path(gen.name).stem + "_recon.mp4")
-                recon_mp4, meta = unpack_genesisvid(genesis_path=gen_path, out_mp4_path=out_mp4)
+    if uploaded_file and st.button("🔓 Decompress Video"):
+        in_path = Path(uploaded_file.name)
+        with open(in_path, "wb") as f:
+            f.write(uploaded_file.read())
 
-                st.success("Reconstructed MP4 from .genesisvid")
-                st.json(meta)
-                st.video(str(recon_mp4))
+        out_path = Path(in_path.stem.replace("_compressed", "") + "_decompressed.mp4")
 
-                with open(recon_mp4, "rb") as f:
-                    st.download_button(
-                        label=f"⬇️ Download Reconstructed MP4 ({Path(recon_mp4).name})",
-                        data=f.read(),
-                        file_name=Path(recon_mp4).name,
-                        mime="video/mp4",
-                    )
+        with st.spinner("Decompressing... please wait ⏳"):
+            decompress_video(in_path, out_path)
 
-            except Exception as e:
-                st.error(f"Error during reconstruction: {e}")
+        if out_path.exists():
+            st.success(f"✅ Decompression complete: {out_path.name}")
+            with open(out_path, "rb") as f:
+                st.download_button("⬇️ Download Decompressed Video", f, file_name=out_path.name)
